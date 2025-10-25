@@ -29,4 +29,4 @@ The format follows Keep a Changelog and the project adheres to Semantic Versioni
 ### Removed
 - Postgres 支援（統一為 MySQL）
 
-[0.1.0]: https://github.com/your-org/your-repo/releases/tag/v0.1.0
+[0.1.0]: https://github.com/Haley-Shen-0213/YouTube_Data_Pipeline/releases/tag/v0.1.0
