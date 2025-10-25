@@ -23,10 +23,11 @@ from scripts.services.video_ingestion import run_fetch_videos, run_top_videos
 from scripts.services.playlist_update import run_update_playlists
 # Pipeline 執行與通知（含重試、彙整結果、發送通知）
 from scripts.notifications.runner import run_pipeline_and_notify
-
+# 備註：notify_all 目前在此檔未使用，若未被其他模組引用，可移除以避免未使用 import 的警告
+from scripts.notifications.senders import notify_all  # noqa: F401
 
 # 建立 Typer 應用程式，並提供全域 help 描述
-app = typer.Typer(help="YouTube Data Pipeline CLI")
+app = typer.Typer(help="YouTube Data Pipeline CLI", invoke_without_command=True)
 
 # 子命令：update_playlists
 # 功能：一次更新三個播放清單（最熱門 Shorts、最熱門影片、近期熱門）
@@ -288,7 +289,35 @@ def cmd_run_all(
 # - 讓沒有經過 Typer 的情況下也能直接執行 run_all（例如 __main__ 分支在無參數時）
 def main():
     # 直接當作「預設子命令」執行 run_all
-    return cmd_run_all()
+    return cmd_run_all(
+        channel_id=None,
+
+        # fetch_videos 相關參數
+        fv_max_results=50,
+        fv_published_after=None,
+        fv_published_before=None,
+
+        # top_videos 相關參數
+        tv_start_date=None,
+        tv_end_date=None,
+        tv_from_offset=3,
+        tv_to_offset=2,
+        tv_metric="views",
+        tv_top_n=10,
+        tv_include_revenue=False,
+
+        # update_playlists 相關參數
+        up_dry_run=False,
+        up_window_start=None,
+        up_window_end=None,
+        up_max_changes=None,
+
+        # 重試設定（run_all 全域）
+        max_retries=3,
+        backoff_base=2.0,
+        backoff_initial=1.0,
+        backoff_max=30.0,
+        )
 
 # 入口點
 if __name__ == "__main__":

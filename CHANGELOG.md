@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format follows Keep a Changelog and the project adheres to Semantic Versioning.
 
+## [0.1.1.1] - 2025-10-25 22:30
+
+## Fixed
+修正 scripts/cli.py 預設執行（run_all）因參數逗號遺漏導致語法錯誤，造成無法直接以 python scripts/cli.py 執行的問題
+調整 main() 入口行為：在無子命令時自動補上 run_all，避免將 Typer 的 Option 物件誤傳入指令函式
+
 ## [0.1.1] - 2025-10-25 21:30
 ### Added
 - 新增 Typer CLI 入口 scripts/cli.py，提供：
@@ -60,6 +66,6 @@ The format follows Keep a Changelog and the project adheres to Semantic Versioni
 
 ### Removed
 - Postgres 支援（統一為 MySQL）
-
+[0.1.1.1]: https://github.com/Haley-Shen-0213/YouTube_Data_Pipeline/releases/tag/v0.1.1
 [0.1.1]: https://github.com/Haley-Shen-0213/YouTube_Data_Pipeline/releases/tag/v0.1.1
 [0.1.0]: https://github.com/Haley-Shen-0213/YouTube_Data_Pipeline/releases/tag/v0.1.0
