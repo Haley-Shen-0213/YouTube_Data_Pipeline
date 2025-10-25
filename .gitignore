@@ -19,3 +19,7 @@ dist/
 build/
 *.egg-info/
 *.json
+
+# test資料夾
+test/
+data/
