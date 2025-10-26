@@ -24,3 +24,6 @@ build/
 test/
 data/
 註解文件.ini
+*.ico
+*.spec
+*.exe

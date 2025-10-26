@@ -25,7 +25,8 @@ from scripts.services.playlist_update import run_update_playlists
 from scripts.notifications.runner import run_pipeline_and_notify
 # 備註：notify_all 目前在此檔未使用，若未被其他模組引用，可移除以避免未使用 import 的警告
 from scripts.notifications.senders import notify_all  # noqa: F401
-
+from scripts.db.db import get_engine
+from scripts.channel.ensure import ensure_dim_channel_exists
 # 建立 Typer 應用程式，並提供全域 help 描述
 app = typer.Typer(help="YouTube Data Pipeline CLI", invoke_without_command=True)
 
@@ -188,7 +189,13 @@ def cmd_run_all(
     # 讀取設定與解析頻道 ID
     cfg = load_settings()
     cid = _resolve_channel_id(channel_id, cfg)
-    console.rule(f"Run All Pipeline for channel={cid}")
+    console.rule(f"Run All Pipeline for 頻道ID={cid}")
+
+    # 初始化 DB 與確保頻道存在（若無則建立 dim_channel 基本資料）
+    engine = get_engine()
+    ch_payload = ensure_dim_channel_exists(engine, cid)
+    name = (ch_payload or {}).get("channel_name")
+    console.rule(f"Run All Pipeline for 頻道名稱={name}")
 
     # 判斷是否值得重試的錯誤類型（依訊息字串判定）
     def _should_retry(exc: Exception) -> bool:

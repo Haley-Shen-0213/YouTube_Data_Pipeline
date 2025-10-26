@@ -3,7 +3,6 @@
 # - 提供資料庫連線與工作單元：Engine/Session 工廠、交易管理、通用查詢工具。
 # - 實作與業務相關的專用查詢與 upsert，涵蓋 dim_video 與 fact_yta_channel_daily。
 # - 封裝 SQLAlchemy 常用操作（連線、查詢、交易）以簡化上層 ingestion 程式碼維護。
-
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -228,34 +227,33 @@ def upsert_dim_video_full(engine: Engine, rows: Iterable[Mapping[str, Any]]) -> 
 
     _validate_fields(rows_list, REQUIRED_FULL_FIELDS, "upsert_dim_video_full")
 
-    sql = """
+
+    sql = text("""
     INSERT INTO dim_video (
         video_id, channel_id, video_title, published_at, duration_sec,
-        is_short, shorts_check, video_type, view_count, like_count, comment_count
+        is_short, shorts_check, video_type, view_count, like_count, comment_count, updated_at
     ) VALUES (
-        %(video_id)s, %(channel_id)s, %(video_title)s, %(published_at)s, %(duration_sec)s,
-        %(is_short)s, %(shorts_check)s, %(video_type)s, %(view_count)s, %(like_count)s, %(comment_count)s
+        :video_id, :channel_id, :video_title, :published_at, :duration_sec,
+        :is_short, :shorts_check, :video_type, :view_count, :like_count, :comment_count, CURRENT_TIMESTAMP
     )
     ON DUPLICATE KEY UPDATE
-        channel_id = VALUES(channel_id),
-        video_title = VALUES(video_title),
-        published_at = VALUES(published_at),
-        duration_sec = VALUES(duration_sec),
-        is_short = VALUES(is_short),
-        shorts_check = VALUES(shorts_check),
-        video_type = VALUES(video_type),
-        view_count = VALUES(view_count),
-        like_count = VALUES(like_count),
+        channel_id    = VALUES(channel_id),
+        video_title   = VALUES(video_title),
+        published_at  = VALUES(published_at),
+        duration_sec  = VALUES(duration_sec),
+        is_short      = VALUES(is_short),
+        shorts_check  = VALUES(shorts_check),
+        video_type    = VALUES(video_type),
+        view_count    = VALUES(view_count),
+        like_count    = VALUES(like_count),
         comment_count = VALUES(comment_count),
-        updated_at = CURRENT_TIMESTAMP
-    """
+        updated_at    = CURRENT_TIMESTAMP
+    """)
 
     try:
-        with engine.connect() as conn:
-            # 使用 context manager 管理交易，成功自動 commit，失敗自動 rollback
-            with conn.begin():
-                result = conn.execute(text(sql), rows_list)
-                return result.rowcount
+        with engine.connect() as conn:# 自動 commit/rollback
+            result = conn.execute(sql, rows_list)  # rows_list: list[dict]
+            return result.rowcount
     except SQLAlchemyError as e:
         # 保留完整錯誤資訊與堆疊，方便上層記錄與告警
         raise RuntimeError(f"upsert_dim_video_full 失敗: {e}") from e
