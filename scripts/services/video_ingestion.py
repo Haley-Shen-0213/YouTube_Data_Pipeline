@@ -17,6 +17,7 @@ from scripts.db.db import (
     get_raw_cursor,
     upsert_dim_video_full,
     upsert_dim_video_stats_only,
+    upsert_dim_video_full_update,
 )
 from scripts.channel.ensure import ensure_dim_channel_exists
 from scripts.youtube.playlists import fetch_channel_video_ids
@@ -100,6 +101,7 @@ def run_fetch_videos(
     # 6) 準備 upsert rows（分為完整 upsert 與僅統計更新）
     rows_full: List[Dict[str, Any]] = []
     rows_stats: List[Dict[str, Any]] = []
+    rows_full_update: List[Dict[str, Any]] = []
     # - rows_full：首次或尚未做 shorts_check 的影片，需寫入完整欄位（meta + 統計）
     # - rows_stats：已做過 shorts_check 的既有影片，僅更新變動的統計欄位
 
@@ -120,6 +122,32 @@ def run_fetch_videos(
                     "comment_count": d.get("comment_count"),
                 }
             )
+        elif existed and int(existed.get("shorts_check", 0)) == 0:  
+            # 決定 video_type 與 is_short（使用新版邏輯 _decide_video_type）
+            video_type = _decide_video_type(
+                vid=vid,
+                snippet=(d.get("raw") or {}).get("snippet"),
+                live_details=(d.get("raw") or {}).get("liveStreamingDetails"),
+                duration_sec=d.get("duration_sec"),
+                published_at=d.get("published_at"),  # 已是 naive UTC
+            )
+            is_short = 1 if video_type == "shorts" else 0
+            # 完整 upsert 所需欄位（含 meta 與統計）
+            rows_full_update.append(
+                {
+                    "video_id": vid,
+                    "channel_id": d.get("channel_id") or channel_id,
+                    "video_title": d.get("video_title"),
+                    "published_at": d.get("published_at"),
+                    "duration_sec": d.get("duration_sec"),
+                    "is_short": is_short,
+                    "shorts_check": 1,
+                    "video_type": video_type,
+                    "view_count": d.get("view_count"),
+                    "like_count": d.get("like_count"),
+                    "comment_count": d.get("comment_count"),
+                }
+            )             
         else:
             # 決定 video_type 與 is_short（使用新版邏輯 _decide_video_type）
             video_type = _decide_video_type(
@@ -152,14 +180,15 @@ def run_fetch_videos(
     # 7) 寫 DB（先 full 再 stats，避免舊資料覆蓋新 meta）
     if rows_full:
         upsert_dim_video_full(engine, rows_full)
+    if rows_full_update:
+        upsert_dim_video_full_update(engine, rows_full_update)
     if rows_stats:
         upsert_dim_video_stats_only(engine, rows_stats)
 
-    print(
-        f"[success] 完成更新：總筆數={len(rows_full) + len(rows_stats)}, "
-        f"完整寫入={len(rows_full)}, 僅統計={len(rows_stats)}"
-    )
-
+    print(f"[success] 完成更新：總筆數={len(rows_full) + len(rows_stats) + len(rows_full_update)}")
+    print(f"新影片完整寫入數量  = {len(rows_full)}")
+    print(f"更新vidoe_tpye數量 = {len(rows_full_update)}")
+    print(f"其他僅更新數據數量  = {len(rows_stats)}")    
 # -------------------------------
 # Public: top videos into fact_yta_video_window
 # -------------------------------

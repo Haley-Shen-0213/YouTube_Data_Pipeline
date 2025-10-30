@@ -258,6 +258,45 @@ def upsert_dim_video_full(engine: Engine, rows: Iterable[Mapping[str, Any]]) -> 
         # 保留完整錯誤資訊與堆疊，方便上層記錄與告警
         raise RuntimeError(f"upsert_dim_video_full 失敗: {e}") from e
 
+def upsert_dim_video_full_update(engine: Engine, rows: Iterable[Mapping[str, Any]]) -> int:
+    """
+    對 dim_video 進行完整 upsert（INSERT ... ON DUPLICATE KEY UPDATE）。
+    必備欄位：
+      video_id, channel_id, video_title, published_at, duration_sec,
+      is_short, shorts_check, video_type, view_count, like_count, comment_count
+
+    回傳：
+      result.rowcount（受影響列數；注意：在 ON DUPLICATE KEY UPDATE 下，可能與實際 upsert 筆數不同）
+
+    交易：
+      使用 conn.begin() 明確包一個交易區塊，成功自動 commit、失敗自動 rollback。
+    """
+    rows_list = list(rows)
+    if not rows_list:
+        return 0
+
+    _validate_fields(rows_list, REQUIRED_STATS_FIELDS, "upsert_dim_video_stats_only")
+
+    sql = """
+    UPDATE dim_video
+    SET
+        is_short      = :is_short,
+        shorts_check  = :shorts_check,
+        video_type    = :video_type,
+        view_count = :view_count,
+        like_count = :like_count,
+        comment_count = :comment_count,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE video_id = :video_id
+    """
+
+    try:
+        with engine.connect() as conn:
+            with conn.begin():
+                result = conn.execute(text(sql), rows_list)
+                return result.rowcount
+    except SQLAlchemyError as e:
+        raise RuntimeError(f"upsert_dim_video_stats_only 失敗: {e}") from e
 
 def upsert_dim_video_stats_only(engine: Engine, rows: Iterable[Mapping[str, Any]]) -> int:
     """
