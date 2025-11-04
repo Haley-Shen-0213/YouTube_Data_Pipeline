@@ -146,8 +146,8 @@ def _resolve_window(window_start: Optional[str], window_end: Optional[str], tz: 
 
     # 以本地系統日期近似台北時區日期；若需精準時區，建議引入 zoneinfo/pytz 並以當地午夜切割
     today = dt.date.today()
-    start = today - dt.timedelta(days=9)
-    end   = today - dt.timedelta(days=2)
+    start = today - dt.timedelta(days=7)
+    end   = today - dt.timedelta(days=0)
     return start.isoformat(), end.isoformat()
 
 

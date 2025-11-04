@@ -227,7 +227,6 @@ def upsert_dim_video_full(engine: Engine, rows: Iterable[Mapping[str, Any]]) -> 
 
     _validate_fields(rows_list, REQUIRED_FULL_FIELDS, "upsert_dim_video_full")
 
-
     sql = text("""
     INSERT INTO dim_video (
         video_id, channel_id, video_title, published_at, duration_sec,
@@ -251,7 +250,7 @@ def upsert_dim_video_full(engine: Engine, rows: Iterable[Mapping[str, Any]]) -> 
     """)
 
     try:
-        with engine.connect() as conn:# 自動 commit/rollback
+        with engine.begin() as conn:# 自動 commit/rollback
             result = conn.execute(sql, rows_list)  # rows_list: list[dict]
             return result.rowcount
     except SQLAlchemyError as e:
@@ -425,7 +424,7 @@ def query_top_vods(channel_id: str, limit: int = 10, engine: Optional[Engine] = 
     SELECT video_id
     FROM dim_video
     WHERE channel_id = :channel_id
-      AND video_type = 'vod'
+      AND (video_type = 'vod' or video_type = 'live_replay')
     ORDER BY view_count DESC, published_at DESC
     LIMIT :limit
     """
