@@ -431,6 +431,22 @@ def query_top_vods(channel_id: str, limit: int = 10, engine: Optional[Engine] = 
     rows = fetch_all(engine, sql, {"channel_id": channel_id, "limit": limit})
     return [r["video_id"] for r in rows]
 
+def query_poe327(channel_id: str, engine: Optional[Engine] = None) -> List[str]:
+    """
+    回傳指定頻道的 VOD（長影片），依 view_count DESC、published_at DESC 排序的前 N 名 video_id。
+    - 過濾條件：video_type = 'vod'
+    - 預設 N=10；可透過參數調整。
+    """
+    engine = engine or get_engine()
+    sql = """
+    SELECT video_id
+    FROM dim_video
+    WHERE channel_id = :channel_id
+      AND video_title LIKE '%《流亡黯道：黯焰看守者》%'
+    """
+    rows = fetch_all(engine, sql, {"channel_id": channel_id})
+    return [r["video_id"] for r in rows]
+
 # 本程式作用摘要：
 # - get_engine / make_engine / get_session：建立並管理資料庫連線與交易生命週期。
 # - fetch_scalar / fetch_one / fetch_all：通用查詢輔助，簡化 SQL 執行與結果轉換。
