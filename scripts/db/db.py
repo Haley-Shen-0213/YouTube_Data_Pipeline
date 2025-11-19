@@ -424,8 +424,26 @@ def query_top_vods(channel_id: str, limit: int = 10, engine: Optional[Engine] = 
     SELECT video_id
     FROM dim_video
     WHERE channel_id = :channel_id
-      AND (video_type = 'vod' or video_type = 'live_replay')
+      AND (video_type = 'vod')
     ORDER BY view_count DESC, published_at DESC
+    LIMIT :limit
+    """
+    rows = fetch_all(engine, sql, {"channel_id": channel_id, "limit": limit})
+    return [r["video_id"] for r in rows]
+
+def query_new_vods(channel_id: str, limit: int = 10, engine: Optional[Engine] = None) -> List[str]:
+    """
+    回傳指定頻道的 VOD（長影片），依 view_count DESC、published_at DESC 排序的前 N 名 video_id。
+    - 過濾條件：video_type = 'vod'
+    - 預設 N=10；可透過參數調整。
+    """
+    engine = engine or get_engine()
+    sql = """
+    SELECT video_id
+    FROM dim_video
+    WHERE channel_id = :channel_id
+      AND (video_type = 'vod')
+    ORDER BY published_at DESC
     LIMIT :limit
     """
     rows = fetch_all(engine, sql, {"channel_id": channel_id, "limit": limit})

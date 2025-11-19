@@ -9,7 +9,7 @@ from __future__ import annotations
 import time
 import datetime as dt
 from typing import List, Dict, Optional, Tuple, Iterable, Any, Set
-from scripts.db.db import query_top_shorts, query_top_vods, query_poe327
+from scripts.db.db import query_top_shorts, query_top_vods, query_poe327, query_new_vods
 from scripts.youtube.client import get_youtube_data_client, call_with_retries
 from scripts.ingestion.ya_api import build_ya_client
 from scripts.services.top_videos_query import query_top_videos_from_ya
@@ -38,7 +38,7 @@ def run_update_playlists(
     started_at = time.time()
 
     # 0) 從 settings 讀取三個播放清單 ID（必要）
-    pl_shorts, pl_vods, pl_recent, p1_poe327 = _get_playlists_from_settings(settings)
+    pl_shorts, pl_vods, pl_recent, p1_poe327, pl_new_vods = _get_playlists_from_settings(settings)
 
     # 1) 決定 window（未提供則用預設 D-9~D-2）
     w_start, w_end = _resolve_window(window_start, window_end, tz="Asia/Taipei")
@@ -49,6 +49,7 @@ def run_update_playlists(
     # - 來自資料庫彙總的 Top shorts / Top VOD 名單（回傳已排序的 video_id 列表）
     target_shorts = query_top_shorts(channel_id, limit=20)
     target_vods   = query_top_vods(channel_id, limit=10)
+    target_new_vods   = query_new_vods(channel_id, limit=10)
     target_poe327   = query_poe327(channel_id)
     # - 近期熱門使用 YouTube Analytics 的視窗排行榜（views 排序，取前 10）
     analytics = build_ya_client(settings or {})
@@ -68,11 +69,13 @@ def run_update_playlists(
     current_vods   = yt_list_playlist_video_ids(pl_vods, settings=settings)
     current_recent = yt_list_playlist_video_ids(pl_recent, settings=settings)
     current_poe327 = yt_list_playlist_video_ids(p1_poe327, settings=settings)
+    current_new_vods   = yt_list_playlist_video_ids(pl_new_vods, settings=settings)
 
     # 4) 計算差異：清單1、2 以集合差異決定需新增與刪除的 video_id
     add_shorts, del_shorts = _diff_sets(target_shorts, current_shorts)
     add_vods,   del_vods   = _diff_sets(target_vods, current_vods)
     add_poe327,   del_poe327   = _diff_sets(target_poe327, current_poe327)
+    add_new_vods,   del_new_vods   = _diff_sets(target_new_vods, current_new_vods)
 
     # 5) 依限額裁切（若設定 max_changes_per_playlist）
     if max_changes_per_playlist is not None:
@@ -114,6 +117,7 @@ def run_update_playlists(
     print(f"[plan] vods add={len(add_vods)} remove={len(del_vods)};") 
     print(f"[plan] recent rebuild={len(target_recent)};") 
     print(f"[plan] poe327 add={len(add_poe327)} remove={len(del_poe327)}")
+    print(f"[plan] new_vods add={len(add_new_vods)} remove={len(del_new_vods)}")
 
     if dry_run:
         # 僅輸出計畫，不觸發 API 實作
@@ -134,6 +138,9 @@ def run_update_playlists(
 
     _yt_delete_many(p1_poe327, del_poe327, settings, label="poe327")
     _yt_insert_many(p1_poe327, add_poe327, settings, label="poe327")
+
+    _yt_delete_many(pl_new_vods, del_new_vods, settings, label="new_vods")
+    _yt_insert_many(pl_new_vods, add_new_vods, settings, label="new_vods")
     # 8) 回填耗時並回傳
     result["metrics"]["duration_sec"] = round(time.time() - started_at, 3)
     print(f"[success] update_playlists completed in {result['metrics']['duration_sec']}s")
@@ -185,6 +192,7 @@ def _get_playlists_from_settings(settings: Optional[Dict[str, Any]]) -> Tuple[st
         "YT_PLAYLIST_VODS_TOP",
         "YT_PLAYLIST_RECENT_HOT",
         "YT_PLAYLIST_POE327",
+        "YT_PLAYLIST_NEWPOST",
     ]
     missing = [k for k in keys if not str(settings.get(k, "")).strip()]
     if missing:
@@ -194,7 +202,8 @@ def _get_playlists_from_settings(settings: Optional[Dict[str, Any]]) -> Tuple[st
     pl_vods   = settings["YT_PLAYLIST_VODS_TOP"].strip()
     pl_recent = settings["YT_PLAYLIST_RECENT_HOT"].strip()
     pl_poe327 = settings["YT_PLAYLIST_POE327"].strip()
-    return pl_shorts, pl_vods, pl_recent,pl_poe327
+    pl_new_vods = settings["YT_PLAYLIST_NEWPOST"].strip()
+    return pl_shorts, pl_vods, pl_recent, pl_poe327, pl_new_vods
 
 # ------------- YouTube API 介面（請接到你的實作） -------------
 
