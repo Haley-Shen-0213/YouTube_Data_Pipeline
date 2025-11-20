@@ -43,8 +43,8 @@ def run_update_playlists(
     # 1) 決定 window（未提供則用預設 D-9~D-2）
     w_start, w_end = _resolve_window(window_start, window_end, tz="Asia/Taipei")
 
-    print(f"[update_playlists] channel={channel_id} dry_run={dry_run} window={w_start}~{w_end} max_changes={max_changes_per_playlist}")
-
+    print(f"[update_playlists] 頻道={channel_id} 試跑模式={dry_run} 區間={w_start}~{w_end} 最大變更數={max_changes_per_playlist}")
+    
     # 2) 查詢目標名單
     # - 來自資料庫彙總的 Top shorts / Top VOD 名單（回傳已排序的 video_id 列表）
     target_shorts = query_top_shorts(channel_id, limit=20)
@@ -113,11 +113,11 @@ def run_update_playlists(
         },
     }
 
-    print(f"[plan] shorts add={len(add_shorts)} remove={len(del_shorts)};")
-    print(f"[plan] vods add={len(add_vods)} remove={len(del_vods)};") 
-    print(f"[plan] recent rebuild={len(target_recent)};") 
-    print(f"[plan] poe327 add={len(add_poe327)} remove={len(del_poe327)}")
-    print(f"[plan] new_vods add={len(add_new_vods)} remove={len(del_new_vods)}")
+    print(f"[計畫] shorts 新增={len(add_shorts)} 移除={len(del_shorts)};")
+    print(f"[計畫] vods 新增={len(add_vods)} 移除={len(del_vods)};") 
+    print(f"[計畫] recent 重建={len(target_recent)};") 
+    print(f"[計畫] poe327 新增={len(add_poe327)} 移除={len(del_poe327)}")
+    print(f"[計畫] new_vods 新增={len(add_new_vods)} 移除={len(del_new_vods)}")
 
     if dry_run:
         # 僅輸出計畫，不觸發 API 實作
@@ -143,7 +143,7 @@ def run_update_playlists(
     _yt_insert_many(pl_new_vods, add_new_vods, settings, label="new_vods")
     # 8) 回填耗時並回傳
     result["metrics"]["duration_sec"] = round(time.time() - started_at, 3)
-    print(f"[success] update_playlists completed in {result['metrics']['duration_sec']}s")
+    print(f"[成功] update_playlists 執行完成，耗時 {result['metrics']['duration_sec']} 秒")
     return result
 
 
@@ -336,9 +336,9 @@ def _yt_delete_many(playlist_id: str, video_ids: Iterable[str], settings: Option
     """
     video_ids = list(video_ids)
     if not video_ids:
-        print(f"[{label}] delete none")
+        print(f"[{label}] 無須刪除")
         return
-    print(f"[{label}] delete count={len(video_ids)}")
+    print(f"[{label}] 刪除數量={len(video_ids)}")
     _retry(lambda: yt_delete_playlist_items(playlist_id, video_ids, settings), op=f"{label}-delete")
 
 def _yt_insert_many(playlist_id: str, video_ids: Iterable[str], settings: Optional[Dict[str, Any]], label: str) -> None:
@@ -348,9 +348,9 @@ def _yt_insert_many(playlist_id: str, video_ids: Iterable[str], settings: Option
     """
     video_ids = list(video_ids)
     if not video_ids:
-        print(f"[{label}] insert none")
+        print(f"[{label}] 無須新增")
         return
-    print(f"[{label}] insert count={len(video_ids)}")
+    print(f"[{label}] 新增數量={len(video_ids)}")
     _retry(lambda: yt_insert_playlist_items(playlist_id, video_ids, settings, ordered=False), op=f"{label}-insert")
 
 def _yt_insert_in_order(playlist_id: str, ordered_video_ids: List[str], settings: Optional[Dict[str, Any]], label: str) -> None:
@@ -359,9 +359,9 @@ def _yt_insert_in_order(playlist_id: str, ordered_video_ids: List[str], settings
     - 用於「近期熱門」清單的清空後重建
     """
     if not ordered_video_ids:
-        print(f"[{label}] rebuild none")
+        print(f"[{label}] 無須重建")
         return
-    print(f"[{label}] rebuild insert count={len(ordered_video_ids)} (ordered)")
+    print(f"[{label}] 重建寫入數量={len(ordered_video_ids)} (已排序)")
     _retry(lambda: yt_insert_playlist_items(playlist_id, ordered_video_ids, settings, ordered=True), op=f"{label}-rebuild-insert")
 
 def _retry(fn, op: str, max_attempts: int = 5, base_delay: float = 1.0):
@@ -383,8 +383,8 @@ def _retry(fn, op: str, max_attempts: int = 5, base_delay: float = 1.0):
         except Exception as e:
             attempt += 1
             if attempt >= max_attempts:
-                print(f"[error] {op} failed after {attempt} attempts: {e}")
+                print(f"[錯誤] {op} 在嘗試 {attempt} 次後失敗: {e}")
                 raise
             delay = base_delay * (2 ** (attempt - 1))
-            print(f"[warn] {op} attempt {attempt} failed: {e}; retry in {delay:.1f}s")
+            print(f"[警告] {op} 第 {attempt} 次嘗試失敗: {e}; 將於 {delay:.1f}秒後重試")
             time.sleep(delay)

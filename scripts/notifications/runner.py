@@ -8,12 +8,42 @@
 import os
 import time
 import traceback
+import sys
+import io
 from typing import Callable, Dict, Any, List
 
 from .senders import notify_all, format_summary_text
 
 # 保留鍵：steps_spec 的 kwargs 中不應傳遞這些鍵到實際步驟函式，避免與 runner 控制參數衝突
 RESERVED_KW_KEYS = {"name", "fn", "should_retry", "sleep_for_retry", "max_retries", "console"}
+
+# --- [新增] 1. 用於同時顯示並捕捉輸出的工具類別 ---
+class StreamTee:
+    """
+    一個類似 Tee 的串流工具，會將寫入的內容同時送到：
+    1. 原始串流 (例如螢幕/終端機)
+    2. 內部的 StringIO (用於捕捉字串)
+    """
+    def __init__(self, original_stream):
+        self.original_stream = original_stream
+        self.capture_buffer = io.StringIO()
+
+    def write(self, data):
+        # 寫入原始位置 (保持螢幕看得到)
+        self.original_stream.write(data)
+        # 寫入緩衝區 (存起來發報告用)
+        self.capture_buffer.write(data)
+        # 確保即時刷新
+        self.original_stream.flush()
+
+    def flush(self):
+        self.original_stream.flush()
+        self.capture_buffer.flush()
+
+    def get_captured_text(self):
+        return self.capture_buffer.getvalue()
+
+# ------------------------------------------------
 
 def run_step_with_retry(
     name: str,
@@ -40,9 +70,15 @@ def run_step_with_retry(
     行為：
       - 成功：立即回傳 ok=True
       - 失敗：依 should_retry 判斷並呼叫 sleep_for_retry，再次嘗試直至超過上限或不該重試
+
+    (已修改) 增加 Log 捕捉功能
     """
     attempt = 0
     start_ts = time.time()
+
+    # 準備捕捉器
+    stdout_tee = StreamTee(sys.stdout)
+
     step_info: Dict[str, Any] = {
         "name": name,
         "ok": False,
@@ -50,35 +86,53 @@ def run_step_with_retry(
         "elapsed": 0.0,
         "error": None,
         "traceback": None,
+        "logs": ""  # [新增] 用來存放捕捉到的 Log
     }
-    while True:
-        attempt += 1
-        step_info["attempts"] = attempt
-        console.print(f"[bold cyan]>> Start {name} (attempt {attempt})[/bold cyan]")
-        try:
-            # 執行實際步驟
-            fn(*args, **kwargs)
-            elapsed = time.time() - start_ts
-            step_info["elapsed"] = elapsed
-            step_info["ok"] = True
-            console.print(f"[bold green]<< Success {name}[/bold green] ({elapsed:.2f}s)")
-            return step_info
-        except Exception as e:
-            # 失敗時收集錯誤與堆疊
-            elapsed = time.time() - start_ts
-            step_info["elapsed"] = elapsed
-            step_info["error"] = str(e)
-            step_info["traceback"] = traceback.format_exc()
 
-            # 不重試的情況：超過次數上限，或 should_retry 判斷為 False
-            if (attempt > (1 + max_retries)) or (not should_retry(e)):
-                console.print(f"[bold red]<< Failed {name} ({elapsed:.2f}s): {e}[/bold red]")
+    # 暫時替換系統 stdout，這樣 fn 裡面的 print 就會經過 StreamTee
+    original_stdout = sys.stdout
+    sys.stdout = stdout_tee
+
+    try:
+        while True:
+            attempt += 1
+            step_info["attempts"] = attempt
+            console.print(f"[bold cyan]>> Start {name} (attempt {attempt})[/bold cyan]")
+            
+            try:
+                # 執行實際步驟
+                fn(*args, **kwargs)
+                
+                elapsed = time.time() - start_ts
+                step_info["elapsed"] = elapsed
+                step_info["ok"] = True
+                console.print(f"[bold green]<< Success {name}[/bold green] ({elapsed:.2f}s)")
+                
+                # [新增] 成功後，把捕捉到的文字存入 step_info
+                step_info["logs"] = stdout_tee.get_captured_text()
                 return step_info
+                
+            except Exception as e:
+                elapsed = time.time() - start_ts
+                step_info["elapsed"] = elapsed
+                step_info["error"] = str(e)
+                step_info["traceback"] = traceback.format_exc()
 
-            # 準備下一次嘗試：sleep_for_retry 內部執行 sleep，並回傳實際等待秒數
-            next_attempt = attempt + 1
-            wait = sleep_for_retry(attempt_idx=attempt)  # 內部已 sleep，並回傳實際等待
-            console.print(f"[yellow].. Retried {name} after {wait:.1f}s (next attempt {next_attempt}/{1+max_retries})[/yellow]")
+                # 不重試的情況
+                if (attempt > (1 + max_retries)) or (not should_retry(e)):
+                    console.print(f"[bold red]<< Failed {name} ({elapsed:.2f}s): {e}[/bold red]")
+                    # [新增] 失敗時也要存 Log，方便除錯
+                    step_info["logs"] = stdout_tee.get_captured_text()
+                    return step_info
+
+                # 準備重試
+                next_attempt = attempt + 1
+                wait = sleep_for_retry(attempt_idx=attempt)
+                console.print(f"[yellow].. Retried {name} after {wait:.1f}s (next attempt {next_attempt}/{1+max_retries})[/yellow]")
+    
+    finally:
+        # [重要] 務必將 stdout 還原，避免影響後續程式
+        sys.stdout = original_stdout
 
 def _sanitize_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -164,6 +218,14 @@ def run_pipeline_and_notify(
             )
 
             steps_result.append(info)
+            
+            # [新增] 將該步驟捕捉到的 Log 加入到 extra_details 中
+            # 為了避免訊息過長，您可以選擇是否要過濾或只在失敗時加入
+            log_content = info.get("logs", "").strip()
+            if log_content:
+                extra_details.append(f"\n--- [{spec['name']}] 執行紀錄 ---")
+                extra_details.append(log_content)
+                
             if not info["ok"]:
                 # 任一步驟失敗，標記總狀態為失敗並中斷迴圈
                 status = "失敗"

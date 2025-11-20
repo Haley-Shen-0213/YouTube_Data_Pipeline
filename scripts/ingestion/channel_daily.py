@@ -53,10 +53,10 @@ def ingest_channel_daily(channel_id: str, env: Dict[str, str]) -> None:
     start_date, end_date = compute_window(engine, channel_id, env["START_DATE"])
     if not start_date or not end_date:
         # 若計算無新日期，則直接結束（例如資料已最新）
-        print("[ingest_channel_daily] No new dates to ingest. Done.")
+        print("[ingest_channel_daily] 沒有新的日期需要匯入。完成。")
         return
 
-    print(f"[ingest_channel_daily] Fetching range: {start_date} ~ {end_date}")
+    print(f"[ingest_channel_daily] 正在擷取日期範圍: {start_date} ~ {end_date}")
 
     # 3) 建立 YT Analytics client 並查詢日級資料（維度 day）
     analytics = build_ya_client(env)
@@ -64,7 +64,7 @@ def ingest_channel_daily(channel_id: str, env: Dict[str, str]) -> None:
 
     # 若 API 無回傳資料，則記錄訊息並結束
     if not records:
-        print("[ingest_channel_daily] No data returned from YouTube Analytics.")
+        print("[ingest_channel_daily] YouTube Analytics 未回傳任何資料。")
         return
 
     # 4) 準備 upsert rows：將回傳欄位轉為事實表欄位，並處理型別與缺值
@@ -96,7 +96,7 @@ def ingest_channel_daily(channel_id: str, env: Dict[str, str]) -> None:
 
     # 5) 寫入 DB（upsert 以避免重複，並更新既有紀錄）
     upsert_fact_channel_daily(engine, rows)
-    print(f"[ingest_channel_daily] Upserted {len(rows)} rows into fact_yta_channel_daily.")
+    print(f"[ingest_channel_daily] 已寫入 {len(rows)} 筆資料至 fact_yta_channel_daily。")
 
 # 本程式作用摘要：
 # - _resolve_channel_id：決定使用的頻道 ID（優先 CLI/參數，其次設定）。

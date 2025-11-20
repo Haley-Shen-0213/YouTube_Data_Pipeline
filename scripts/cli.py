@@ -27,6 +27,7 @@ from scripts.notifications.runner import run_pipeline_and_notify
 from scripts.notifications.senders import notify_all  # noqa: F401
 from scripts.db.db import get_engine
 from scripts.channel.ensure import ensure_dim_channel_exists
+from scripts.run_probe import run_probe
 # 建立 Typer 應用程式，並提供全域 help 描述
 app = typer.Typer(help="YouTube Data Pipeline CLI", invoke_without_command=True)
 
@@ -330,6 +331,7 @@ def main():
 if __name__ == "__main__":
     # 清空終端畫面，讓輸出更乾淨
     clear_terminal()
+    run_probe()
 
     # 行為說明：
     # - 若「沒有帶任何子命令或參數」，則視為想要一鍵執行完整管線 → 呼叫 main()（即 run_all）
