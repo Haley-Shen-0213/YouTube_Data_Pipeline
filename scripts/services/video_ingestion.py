@@ -18,6 +18,7 @@ from scripts.db.db import (
     upsert_dim_video_full,
     upsert_dim_video_stats_only,
     upsert_dim_video_full_update,
+    insert_fact_video_velocity,  # <--- 新增這個
 )
 from scripts.channel.ensure import ensure_dim_channel_exists
 from scripts.youtube.playlists import fetch_channel_video_ids
@@ -98,6 +99,56 @@ def run_fetch_videos(
             vid = d["video_id"]     # API 回傳的影片 ID（預期存在）
             details_map[vid] = d    # 若重複 key，後者覆蓋前者（正常不會發生）
 
+    # =========================================================================
+    # [NEW Step 5.5] 計算 Velocity (Delta) 並寫入 fact_video_velocity
+    # =========================================================================
+    print("[info] 計算數據變化量 (Velocity) 並寫入 Log...")
+    velocity_rows: List[Dict[str, Any]] = []
+    current_capture_time = datetime.now() # 統一這批次的寫入時間
+
+    for vid in video_ids:
+        new_data = details_map.get(vid)
+        if not new_data:
+            continue # API 沒抓到資料，無法計算
+
+        old_data = existing_map.get(vid)
+        
+        # 準備數值 (若無舊資料則視為 0，若 API 回傳 None 則視為 0)
+        # New Values
+        n_views = int(new_data.get("view_count") or 0)
+        n_likes = int(new_data.get("like_count") or 0)
+        n_comments = int(new_data.get("comment_count") or 0)
+
+        # Old Values (若 old_data 為 None，代表是新影片，舊值設為 0)
+        o_views = int(old_data.get("view_count") or 0) if old_data else 0
+        o_likes = int(old_data.get("like_count") or 0) if old_data else 0
+        o_comments = int(old_data.get("comment_count") or 0) if old_data else 0
+
+        # 計算 Delta
+        d_views = n_views - o_views
+        d_likes = n_likes - o_likes
+        d_comments = n_comments - o_comments
+
+        # 只有當數據有變化，或是新影片時才記錄 (可選：若想記錄心跳即使是0，可移除此 if)
+        # 這裡建議記錄，因為可以看出「這段時間沒人看」
+        velocity_rows.append({
+            "video_id": vid,
+            "captured_at": current_capture_time,
+            "delta_views": d_views,
+            "delta_likes": d_likes,
+            "delta_comments": d_comments
+        })
+
+    if velocity_rows:
+        v_count = insert_fact_video_velocity(engine, velocity_rows)
+        print(f"[info] Velocity Log 寫入完成：{v_count} 筆")
+    else:
+        print("[info] 無 Velocity 數據需寫入")
+
+    # =========================================================================
+    # [End of NEW Step] 接續原本的邏輯
+    # =========================================================================
+    
     # 6) 準備 upsert rows（分為完整 upsert 與僅統計更新）
     rows_full: List[Dict[str, Any]] = []
     rows_stats: List[Dict[str, Any]] = []

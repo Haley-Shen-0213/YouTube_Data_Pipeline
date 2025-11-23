@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format follows Keep a Changelog and the project adheres to Semantic Versioning.
 
+## [1.7.0] - 2025-11-24
+
+## Added
+Real-time Velocity Tracking: 強化 track_velocity 模組，整合 fetch_videos 邏輯，實現分鐘級別的影片數據監控。
+Discord Leaderboard: 新增 Discord 即時排行榜功能，於 track_velocity 執行時自動更新熱門影片看板。
+Silent Mode: Pipeline 通知機制新增「靜默成功」模式，僅在發生錯誤時發送警報，減少日常運維干擾。
+
+## Changed
+Architecture: 將 fetch_videos (影片數據抓取) 從通用 CLI 遷移至 track_velocity 流程中執行，以支援高頻率監控。
+Data Source Strategy: 即時監控流程不再依賴有 2+ 天延遲的 YouTube Analytics API，改為直接抓取 Data API 數據以確保即時性。
+Reporting: 優化回報機制，現在 track_velocity 預設只回報 Exception 與 Error，成功執行不再發送通知。
+
+## Removed
+移除即時監控流程中對 YouTube Analytics API 的依賴。
+
 ## [0.1.1.1] - 2025-10-25 22:30
 
 ## Fixed
@@ -66,6 +81,7 @@ The format follows Keep a Changelog and the project adheres to Semantic Versioni
 
 ### Removed
 - Postgres 支援（統一為 MySQL）
-[0.1.1.1]: https://github.com/Haley-Shen-0213/YouTube_Data_Pipeline/releases/tag/v0.1.1
+[0.1.7.0]: https://github.com/Haley-Shen-0213/YouTube_Data_Pipeline/releases/tag/v0.1.7.0
+[0.1.1.1]: https://github.com/Haley-Shen-0213/YouTube_Data_Pipeline/releases/tag/v0.1.1.1
 [0.1.1]: https://github.com/Haley-Shen-0213/YouTube_Data_Pipeline/releases/tag/v0.1.1
 [0.1.0]: https://github.com/Haley-Shen-0213/YouTube_Data_Pipeline/releases/tag/v0.1.0

@@ -3,11 +3,25 @@
 
 以 YouTube Data API v3 抓取頻道/影片/留言等公開資料（API Key），並可選擇透過 YouTube Analytics API（OAuth）取得營運指標；同時支援 YouTube Data API 的 OAuth（YDAO）以進行寫入/管理操作。提供 CLI、型別註解、基礎測試與 CI，協助快速將結構化資料落地到 MySQL。
 
+重大更新 (v1.7.0)
+即時戰情室：新增 track_velocity 獨立監控流程，整合 Discord 排行榜，擺脫 Analytics API 延遲，實現真正的即時流量監控。
+智慧通知：採用「例外管理」原則，Pipeline 僅在出錯時發送通知，日常運作保持安靜。
+
 - 資料來源：
-  - YouTube Data API v3（API Key；亦支援 OAuth 寫入/管理）
-  - YouTube Analytics API（OAuth）
-- 功能：頻道/影片/留言抓取、影片時長解析、日指標彙整、MySQL 寫入
-- 工具：CLI（probe/fetch）、ruff、mypy、pytest、GitHub Actions CI
+  - YouTube Data API v3（API Key；亦支援 OAuth 寫入/管理）：用於即時抓取影片觀看數、留言、頻道資訊。
+  - YouTube Analytics API（OAuth）（不參與即時監控）。
+- 功能：
+  - 頻道/影片/留言抓取：支援全量與增量更新。
+  - 即時流量監控 (Velocity Tracking)：
+  - 整合 fetch_videos 進行高頻率數據採集。
+  - 自動計算影片流量增速。
+  - Discord 排行榜：自動推送流量飆升影片至 Discord 頻道。
+  - 影片時長解析：自動轉換 ISO 8601 時長格式。
+  - 日指標彙整：整合 Analytics 數據生成日報表。
+  - MySQL 寫入：結構化資料儲存。
+- 工具：
+  - python -m scripts.cli：通用管理工具（頻道日更、歷史數據回補）。
+  - python scripts/track_velocity.py：即時監控專用工具（含 Discord 排行榜）。
 - 版本註記：本文件對應 版本 0.1.0（首版發布，2025/10/25 12:00）
 
 [2025/10/25 21:30 更新 版本 0.1.1]
@@ -39,6 +53,10 @@
 
 [2025/10/30 14:30 更新 版本 0.1.1.3]
 - 版本：更新至 0.1.1.3 修正分類設定的一些小細節
+
+[2025/11/24 07:30 更新 版本 0.1.7.0]
+- 版本：更新至 0.1.7.0 重大更新，請參考CHANGELOG
+
 ## 目錄
 - 快速開始
 - 系統需求
@@ -169,10 +187,23 @@ Probe 輸出：
 - 若啟用通知（NOTIFY_SENDERS），probe 與管線摘要會透過 Email/LINE/Discord 推送（容錯不中斷主流程）
 
 ## 使用方法（CLI）
-- 公開資料抓取：python -m src.cli.fetch public --channel-id $CHANNEL_ID --start $START_DATE --end $END_DATE
-- Analytics 指標抓取：python -m src.cli.fetch analytics --channel-id $CHANNEL_ID --start $START_DATE --end $END_DATE
-- 撰寫/管理操作（需 YDAO OAuth）：python -m src.cli.manage playlist --action upsert --video-id ...
+1. 即時流量監控 (核心功能)
+- 執行此腳本可進行即時數據抓取並更新 Discord 排行榜。建議透過排程（Cron/Task Scheduler）每小時或更高頻率執行。
+  - 執行完整監控流程 (抓取數據 -> 更新 DB -> 更新 Discord 排行榜 -> 錯誤時報警)
+  - python scripts/track_velocity.py
+- 僅更新排行榜 (不抓新資料)
+  - python scripts/track_velocity.py update_rankings --category hourly
+2. 日常維護與歷史數據
+使用主 CLI 進行頻道基本資料更新或歷史數據回補。
+- 執行每日例行任務 (頻道資訊更新等)
+  - python -m scripts.cli run_all
+- 單獨測試影片抓取
+  - python -m scripts.cli fetch_videos --channel-id <CHANNEL_ID>
+3. 建立執行檔 (Optional)
+專案支援使用 PyInstaller 打包為獨立執行檔，方便部署。
 
+# 打包 track_velocity
+pyinstaller --onefile scripts/track_velocity.py
 註：實際指令以專案內 CLI 實作為準。
 
 [新增於 0.1.1]
@@ -325,7 +356,7 @@ YouTube_Data_Pipeline/
 
 ## 版本與變更紀錄
 - 規範：Keep a Changelog；版本：Semantic Versioning（MAJOR.MINOR.PATCH）
-- 最新版本：0.1.1（2025/10/25 21:30）
+- 最新版本：0.1.7（2025/11/24 07:30）
 - 詳細變更請見 CHANGELOG.md
 
 [2025/10/25 21:30 更新 版本 0.1.1]
@@ -343,3 +374,6 @@ YouTube_Data_Pipeline/
 
 [2025/10/30 14:30 更新 版本 0.1.1.3]
 - 版本：更新至 0.1.1.3 修正分類設定的一些小細節
+
+[2025/11/24 07:30 更新 版本 0.1.7.0]
+- 版本：更新至 0.1.7.0 重大更新，請參考CHANGELOG

@@ -1,15 +1,9 @@
-# scripts/cli.py
-# 說明：
-# - 本檔案定義 YouTube Data Pipeline 的 CLI 入口，使用 Typer 建立多個子命令。
-# - 同時提供「直接執行不帶子命令時，預設執行 run_all」的行為，方便一鍵跑完整管線。
-# - run_all 內部會呼叫 ingest_channel_daily、fetch_videos、top_videos、update_playlists，
-#   並經由 run_pipeline_and_notify 負責統一的重試與通知。
-
+# 路徑：scripts/track_velocity.py
 import sys
 import time, random
 import typer
 from rich.console import Console
-from typing import Optional
+from typing import Optional, Dict, Any
 
 # 載入專案設定（.env 等）
 from scripts.utils.env import load_settings
@@ -17,83 +11,42 @@ from scripts.utils.env import load_settings
 from scripts.ingestion.channel_daily import ingest_channel_daily, _resolve_channel_id
 # 清空終端畫面的小工具（純顯示用途）
 from scripts.utils.terminal import clear_terminal
-# 影片抓取與熱門影片分析服務
-from scripts.services.video_ingestion import run_fetch_videos, run_top_videos
-# 播放清單維護服務
-from scripts.services.playlist_update import run_update_playlists
 # Pipeline 執行與通知（含重試、彙整結果、發送通知）
 from scripts.notifications.runner import run_pipeline_and_notify
 # 備註：notify_all 目前在此檔未使用，若未被其他模組引用，可移除以避免未使用 import 的警告
 from scripts.notifications.senders import notify_all  # noqa: F401
 from scripts.db.db import get_engine
 from scripts.channel.ensure import ensure_dim_channel_exists
+# 影片抓取與熱門影片分析服務
+from scripts.services.video_ingestion import run_fetch_videos
+# 新增：排行榜看板服務
+from scripts.services.ranking_dashboard import run_ranking_update
+
 # 建立 Typer 應用程式，並提供全域 help 描述
-app = typer.Typer(help="YouTube Data Pipeline CLI", invoke_without_command=True)
+app = typer.Typer(help="YouTube Data Pipeline track_velocity", invoke_without_command=True)
 
-# 子命令：update_playlists
-# 功能：一次更新三個播放清單（最熱門 Shorts、最熱門影片、近期熱門）
-@app.command("update_playlists")
-def cmd_update_playlists(
-    channel_id: Optional[str] = typer.Option(None, "--channel-id", "-c", help="YouTube channel id；預設讀取 .env CHANNEL_ID"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="僅輸出差異，不呼叫 YouTube API 實際更新"),
-    window_start: Optional[str] = typer.Option(None, "--window-start", help="YYYY-MM-DD；近期熱門清單起日，預設 D-9"),
-    window_end: Optional[str] = typer.Option(None, "--window-end", help="YYYY-MM-DD；近期熱門清單迄日，預設 D-2"),
-    max_changes_per_playlist: Optional[int] = typer.Option(None, "--max-changes", help="每個清單最多允許的變更數，保護日額"),
-):
+# 子命令：update_rankings
+# 功能：更新 Discord 看板
+@app.command("update_rankings")
+def cmd_update_rankings():
     """
-    一次更新三個播放清單：
-      1) 最熱門 Shorts（shorts 前 20）
-      2) 最熱門影片（VOD 前 10）
-      3) 近期熱門（D-9 ~ D-2 期間 views 前 10，清空後依序重建）
-
-    策略：
-      - 清單1/2 僅做差異 insert/delete，避免調整順序以節省日額
-      - 清單3 清空並依排序重建（需要順序）
+    更新 Discord 排行榜看板 (Top 10)
+    如果不指定 category，將自動更新所有榜單。
     """
-    # 讀取 .env 與其他設定
-    cfg = load_settings()
-    # 若使用者未提供 --channel-id，則以設定檔預設值解析
-    cid = _resolve_channel_id(channel_id, cfg)
-
-    # 實際執行播放清單更新
-    run_update_playlists(
-        channel_id=cid,
-        dry_run=dry_run,
-        window_start=window_start,
-        window_end=window_end,
-        max_changes_per_playlist=max_changes_per_playlist,
-        settings=cfg,
-    )
-
-# 子命令：top_videos
-# 功能：擷取指定期間或偏移範圍的熱門影片排行（可選指標、前 N 名、是否含營收）
-@app.command("top_videos")
-def cmd_top_videos(
-    channel_id: Optional[str] = typer.Option(None, "--channel-id", "-c", help="YouTube channel id；預設讀取 .env CHANNEL_ID"),
-    start_date: Optional[str] = typer.Option(None, "--start-date", help="YYYY-MM-DD；可覆寫預設偏移"),
-    end_date: Optional[str] = typer.Option(None, "--end-date", help="YYYY-MM-DD；可覆寫預設偏移"),
-    from_offset: int = typer.Option(3, "--from-offset", help="預設抓取今日往回的天數作為起日，例如 3 表示 D-3"),
-    to_offset: int = typer.Option(2, "--to-offset", help="預設抓取今日往回的天數作為迄日，例如 2 表示 D-2"),
-    metric: str = typer.Option("views", "--metric", "-m", help="排序指標：views/estimatedMinutesWatched/likes/comments/shares"),
-    top_n: int = typer.Option(10, "--top", "-n", min=1, max=500, help="取前 N 名"),
-    include_revenue: bool = typer.Option(False, "--include-revenue", help="若有授權，可嘗試包含 estimatedRevenue"),
-):
     # 讀取設定與解析頻道 ID
     cfg = load_settings()
-    cid = _resolve_channel_id(channel_id, cfg)
-
-    # 執行熱門影片統計流程
-    run_top_videos(
-        channel_id=cid,
-        start_date=start_date,
-        end_date=end_date,
-        from_offset=from_offset,
-        to_offset=to_offset,
-        metric=metric,
-        top_n=top_n,
-        include_revenue=include_revenue,
-        settings=cfg,
-    )
+    
+    # 定義所有需要更新的榜單
+    all_categories = ['15min', 'hourly', 'daily', 'weekly', 'monthly']
+            
+    print(f">> 準備更新排行榜: {all_categories}")
+    
+    for cat in all_categories:
+        try:
+            # 將 settings 傳遞給服務函式
+            run_ranking_update(cat, cfg)
+        except Exception as e:
+            print(f"❌ 更新 {cat} 榜單時發生錯誤: {e}")
 
 # 子命令：fetch_videos
 # 功能：列出頻道上傳清單並批次抓取影片詳情，更新本地資料（dim_video 等）
@@ -123,46 +76,16 @@ def cmd_fetch_videos(
         settings=cfg,
     )
 
-# 子命令：ingest_channel_daily
-# 功能：建立/更新頻道層級的日指標（維度表 dim_channel 與 fact_yta_channel_daily）
-@app.command("ingest_channel_daily")
-def cmd_ingest_channel_daily(
-    channel_id: str = typer.Option(None, "--channel-id", "-c", help="YouTube channel id；預設讀取 .env CHANNEL_ID"),
-):
-    """
-    一鍵執行：
-      1) 更新/建立 dim_channel
-      2) 抓取 day × channel 指標並寫入 fact_yta_channel_daily
-         範圍：上次抓取日+1 或 頻道建立日 到 today-0
-    """
-    # 讀取設定與解析頻道 ID
-    settings = load_settings()
-    cid = _resolve_channel_id(channel_id, settings)
-    print(f"[debug] settings.channel_id={cid!r}")
-
-    # 執行頻道日更流程
-    ingest_channel_daily(cid, settings)
-
 # 子命令：run_all（預設主流程）
 # 功能：以統一的重試與通知機制，依序執行四個步驟：ingest_channel_daily → fetch_videos → top_videos → update_playlists
 @app.command("run_all")
 def cmd_run_all(
     channel_id: Optional[str] = typer.Option(None, "--channel-id", "-c", help="YouTube channel id；預設讀取 .env CHANNEL_ID"),
 
-    # top_videos 相關參數
-    tv_start_date: Optional[str] = typer.Option(None, "--tv-start-date", help="top_videos: YYYY-MM-DD"),
-    tv_end_date: Optional[str] = typer.Option(None, "--tv-end-date", help="top_videos: YYYY-MM-DD"),
-    tv_from_offset: int = typer.Option(3, "--tv-from-offset", help="top_videos: 例如 3 代表 D-3"),
-    tv_to_offset: int = typer.Option(2, "--tv-to-offset", help="top_videos: 例如 2 代表 D-2"),
-    tv_metric: str = typer.Option("views", "--tv-metric", help="top_videos: views/estimatedMinutesWatched/likes/comments/shares"),
-    tv_top_n: int = typer.Option(10, "--tv-top", min=1, max=500, help="top_videos: 取前 N 名"),
-    tv_include_revenue: bool = typer.Option(False, "--tv-include-revenue", help="top_videos: 是否嘗試包含 estimatedRevenue"),
-
-    # update_playlists 相關參數
-    up_dry_run: bool = typer.Option(False, "--up-dry-run", help="update_playlists: 僅輸出差異，不實際呼叫 API"),
-    up_window_start: Optional[str] = typer.Option(None, "--up-window-start", help="update_playlists: YYYY-MM-DD"),
-    up_window_end: Optional[str] = typer.Option(None, "--up-window-end", help="update_playlists: YYYY-MM-DD"),
-    up_max_changes: Optional[int] = typer.Option(None, "--up-max-changes", help="update_playlists: 每個清單最多允許的變更數"),
+    # fetch_videos 相關參數
+    fv_max_results: int = typer.Option(50, "--fv-max-results", min=1, max=50, help="fetch_videos: videos.list 每批上限"),
+    fv_published_after: Optional[str] = typer.Option(None, "--fv-published-after", help="fetch_videos: YYYY-MM-DD"),
+    fv_published_before: Optional[str] = typer.Option(None, "--fv-published-before", help="fetch_videos: YYYY-MM-DD"),
 
     # 重試設定（run_all 全域）
     max_retries: int = typer.Option(3, "--max-retries", help="每個步驟最多重試次數（不含首次執行）"),
@@ -172,10 +95,8 @@ def cmd_run_all(
 ):
     """
     依序執行四個步驟（任一步驟失敗則中止）並具備重試機制：
-      1) ingest_channel_daily
-      2) fetch_videos
-      3) top_videos
-      4) update_playlists
+      1) fetch_videos
+      2) update_rankings (更新 Discord 看板)
     遇到 403（例如配額用盡）或其他明確 4xx 錯誤時不重試，直接中止。
     """
     # 美化輸出（分隔線、標題等）
@@ -224,38 +145,22 @@ def cmd_run_all(
     # 將四個步驟以統一規格描述，交由 runner 處理重試與序列執行
     steps_spec = [
         {
-            "name": "ingest_channel_daily",
-            "fn": ingest_channel_daily,  # 直接呼叫目標函數
-            "args": [cid, cfg],          # 位置參數
-            "kwargs": {},                # 關鍵字參數
-        },
-        {
-            "name": "top_videos",
-            "fn": run_top_videos,
+            "name": "fetch_videos",
+            "fn": run_fetch_videos,
             "args": [],
             "kwargs": {
                 "channel_id": cid,
-                "start_date": tv_start_date,
-                "end_date": tv_end_date,
-                "from_offset": tv_from_offset,
-                "to_offset": tv_to_offset,
-                "metric": tv_metric,
-                "top_n": tv_top_n,
-                "include_revenue": tv_include_revenue,
+                "max_results": fv_max_results,
+                "published_after": fv_published_after,
+                "published_before": fv_published_before,
                 "settings": cfg,
             },
         },
         {
-            "name": "update_playlists",
-            "fn": run_update_playlists,
+            "name": "update_rankings",
+            "fn": cmd_update_rankings,
             "args": [],
             "kwargs": {
-                "channel_id": cid,
-                "dry_run": up_dry_run,
-                "window_start": up_window_start,
-                "window_end": up_window_end,
-                "max_changes_per_playlist": up_max_changes,
-                "settings": cfg,
             },
         },
     ]
@@ -282,20 +187,10 @@ def main():
     return cmd_run_all(
         channel_id=None,
 
-        # top_videos 相關參數
-        tv_start_date=None,
-        tv_end_date=None,
-        tv_from_offset=3,
-        tv_to_offset=2,
-        tv_metric="views",
-        tv_top_n=10,
-        tv_include_revenue=False,
-
-        # update_playlists 相關參數
-        up_dry_run=False,
-        up_window_start=None,
-        up_window_end=None,
-        up_max_changes=None,
+        # fetch_videos 相關參數
+        fv_max_results=50,
+        fv_published_after=None,
+        fv_published_before=None,
 
         # 重試設定（run_all 全域）
         max_retries=3,

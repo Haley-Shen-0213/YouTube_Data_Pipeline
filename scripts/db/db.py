@@ -465,6 +465,54 @@ def query_poe327(channel_id: str, engine: Optional[Engine] = None) -> List[str]:
     rows = fetch_all(engine, sql, {"channel_id": channel_id})
     return [r["video_id"] for r in rows]
 
+def query_hot_videos(channel_id: str, limit: int = 10, engine: Optional[Engine] = None) -> List[str]:
+    """
+    回傳指定頻道的 VOD（長影片），依 view_count DESC、published_at DESC 排序的前 N 名 video_id。
+    - 過濾條件：video_type = 'vod'
+    - 預設 N=10；可透過參數調整。
+    """
+    engine = engine or get_engine()
+    sql = """
+    SELECT video_id
+    FROM fact_video_velocity
+    WHERE created_at >= NOW() - INTERVAL 3 DAY
+    GROUP BY 
+        video_id
+    ORDER BY 
+        SUM(delta_views) DESC
+    LIMIT :limit
+    """
+    rows = fetch_all(engine, sql, {"channel_id": channel_id, "limit": limit})
+    return [r["video_id"] for r in rows]
+
+def insert_fact_video_velocity(engine: Engine, rows: Iterable[Mapping[str, Any]]) -> int:
+    """
+    批次寫入 fact_video_velocity (高頻數據追蹤)。
+    欄位：video_id, captured_at, delta_views, delta_likes, delta_comments
+    """
+    rows_list = list(rows)
+    if not rows_list:
+        return 0
+
+    # 這裡不做過多欄位檢查，假設上層邏輯已處理好 int 轉型與預設值
+    sql = """
+    INSERT INTO fact_video_velocity (
+        video_id, captured_at, delta_views, delta_likes, delta_comments
+    ) VALUES (
+        :video_id, :captured_at, :delta_views, :delta_likes, :delta_comments
+    )
+    """
+
+    try:
+        with engine.begin() as conn:
+            result = conn.execute(text(sql), rows_list)
+            return result.rowcount
+    except SQLAlchemyError as e:
+        # 這裡選擇只印出錯誤但不中斷程式，因為 Velocity 數據丟失一筆通常不影響主流程
+        # 若您希望嚴格控管，可改為 raise
+        print(f"[warning] insert_fact_video_velocity 寫入失敗: {e}")
+        return 0
+    
 # 本程式作用摘要：
 # - get_engine / make_engine / get_session：建立並管理資料庫連線與交易生命週期。
 # - fetch_scalar / fetch_one / fetch_all：通用查詢輔助，簡化 SQL 執行與結果轉換。

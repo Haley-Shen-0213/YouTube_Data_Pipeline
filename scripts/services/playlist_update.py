@@ -9,7 +9,7 @@ from __future__ import annotations
 import time
 import datetime as dt
 from typing import List, Dict, Optional, Tuple, Iterable, Any, Set
-from scripts.db.db import query_top_shorts, query_top_vods, query_poe327, query_new_vods
+from scripts.db.db import query_top_shorts, query_top_vods, query_poe327, query_new_vods, query_hot_videos
 from scripts.youtube.client import get_youtube_data_client, call_with_retries
 from scripts.ingestion.ya_api import build_ya_client
 from scripts.services.top_videos_query import query_top_videos_from_ya
@@ -52,17 +52,7 @@ def run_update_playlists(
     target_new_vods   = query_new_vods(channel_id, limit=10)
     target_poe327   = query_poe327(channel_id)
     # - 近期熱門使用 YouTube Analytics 的視窗排行榜（views 排序，取前 10）
-    analytics = build_ya_client(settings or {})
-    target_recent = query_top_videos_from_ya(
-        analytics_client=analytics,
-        channel_id=channel_id,
-        start_date=w_start,
-        end_date=w_end,
-        metric="views",
-        top_n=10,
-        include_revenue=False,
-        return_with_metrics=False,  # 僅需 video_id 排序清單
-    )
+    target_recent = query_hot_videos(channel_id, limit=10)
 
     # 3) 取得現有播放清單內容（YouTube Data API）
     current_shorts = yt_list_playlist_video_ids(pl_shorts, settings=settings)

@@ -29,15 +29,25 @@ class StreamTee:
         self.capture_buffer = io.StringIO()
 
     def write(self, data):
-        # 寫入原始位置 (保持螢幕看得到)
-        self.original_stream.write(data)
-        # 寫入緩衝區 (存起來發報告用)
+        # 1. 寫入原始位置 (只有當原始串流存在時才寫入，避免 NoneType 錯誤)
+        if self.original_stream:
+            try:
+                self.original_stream.write(data)
+                # 確保即時刷新，讓 Log 在終端機即時顯示
+                self.original_stream.flush()
+            except Exception:
+                # 萬一原始串流寫入失敗 (例如 pipe 斷裂)，忽略錯誤以保證程式繼續執行
+                pass
+        
+        # 2. 寫入緩衝區 (存起來發報告用，這部分一定要執行)
         self.capture_buffer.write(data)
-        # 確保即時刷新
-        self.original_stream.flush()
 
     def flush(self):
-        self.original_stream.flush()
+        if self.original_stream:
+            try:
+                self.original_stream.flush()
+            except Exception:
+                pass
         self.capture_buffer.flush()
 
     def get_captured_text(self):
@@ -177,22 +187,8 @@ def run_pipeline_and_notify(
     max_retries: int
 ) -> int:
     """
-    依 steps_spec 描述的步驟順序執行整個 Pipeline，並於結束時輸出摘要、寫入 log 與發送通知。
-    參數：
-      - cfg：通知所需設定（傳遞給 notify_all）
-      - console：rich Console，負責 CLI 輸出
-      - steps_spec：步驟清單（每項需至少包含 name, fn，可選 args, kwargs）
-      - should_retry：重試判斷函式（與 run_step_with_retry 相同）
-      - sleep_for_retry：等待/退避函式（與 run_step_with_retry 相同）
-      - max_retries：最大重試次數
-    回傳：
-      - 程序退出碼：成功為 0，失敗為 1
-    流程：
-      1) 逐步呼叫 run_step_with_retry，收集每步結果；遇到失敗即停止後續步驟。
-      2) 組裝摘要文字（format_summary_text），輸出到 console。
-      3) 寫入 logs 檔案（_write_summary_log）。
-      4) 透過 notify_all 以多通道發送通知。
-      5) 任一階段拋錯會進入 finally 產生摘要並盡力通知。
+    依 steps_spec 描述的步驟順序執行整個 Pipeline，並於結束時輸出摘要、寫入 log。
+    若執行失敗，則額外發送通知。
     """
     started = time.time()
     steps_result: List[Dict[str, Any]] = []
@@ -205,7 +201,7 @@ def run_pipeline_and_notify(
             args = (spec.get("args", []) or [])
             kwargs = _sanitize_kwargs(spec.get("kwargs", {}) or {})
 
-            # 以固定位置參數傳入 run_step_with_retry 的控制參數，避免與步驟函式 *args/**kwargs 混淆
+            # 以固定位置參數傳入 run_step_with_retry 的控制參數
             info = run_step_with_retry(
                 spec["name"],         # name
                 spec["fn"],           # fn
@@ -219,8 +215,7 @@ def run_pipeline_and_notify(
 
             steps_result.append(info)
             
-            # [新增] 將該步驟捕捉到的 Log 加入到 extra_details 中
-            # 為了避免訊息過長，您可以選擇是否要過濾或只在失敗時加入
+            # 將該步驟捕捉到的 Log 加入到 extra_details 中
             log_content = info.get("logs", "").strip()
             if log_content:
                 extra_details.append(f"\n--- [{spec['name']}] 執行紀錄 ---")
@@ -246,20 +241,24 @@ def run_pipeline_and_notify(
         return 1
 
     finally:
-        # 無論成功或失敗，都組裝摘要、寫檔並嘗試發送通知
+        # 無論成功或失敗，都組裝摘要並顯示在 Console
         summary_text = format_summary_text(status, started, steps_result, "\n".join(extra_details))
         console.rule("Pipeline Summary")
         console.print(summary_text)
 
-        # 寫入本地摘要檔
+        # 1. 寫入本地摘要檔 (無論成功失敗都執行)
         try:
             log_path = _write_summary_log(summary_text, status)
             console.print(f"[dim]Summary written to: {log_path}[/dim]")
         except Exception as log_err:
             console.print(f"[red]寫入 logs 失敗：[/red]{log_err}")
 
-        # 透過多通道發送通知（個別通道錯誤不影響流程）
-        try:
-            notify_all(cfg, status=status, started_at=started, steps=steps_result, extra_details="\n".join(extra_details))
-        except Exception as notify_err:
-            console.print(f"[red]通知發送失敗：[/red]{notify_err}")
+        # 2. 發送通知 (修改處：只有在 status 為 "失敗" 時才執行)
+        if status == "失敗":
+            try:
+                console.print("[yellow]偵測到失敗，正在發送通知...[/yellow]")
+                notify_all(cfg, status=status, started_at=started, steps=steps_result, extra_details="\n".join(extra_details))
+            except Exception as notify_err:
+                console.print(f"[red]通知發送失敗：[/red]{notify_err}")
+        else:
+            console.print("[dim]執行成功，略過發送通知。[/dim]")
