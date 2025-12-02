@@ -5,7 +5,7 @@
 # credentials
 credentials/
 .token/
-
+YouTube_Data_API_v3_token/
 # logs and data
 logs/
 data/*
@@ -27,3 +27,4 @@ data/
 *.ico
 *.spec
 *.exe
+YouTube_Data_Pipeline.code-workspace

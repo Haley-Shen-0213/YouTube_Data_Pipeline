@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import time
 import datetime as dt
+from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Optional, Tuple, Iterable, Any, Set
 from scripts.db.db import query_top_shorts, query_top_vods, query_poe327, query_new_vods, query_hot_videos
 from scripts.youtube.client import get_youtube_data_client, call_with_retries
@@ -37,52 +38,100 @@ def run_update_playlists(
     """
     started_at = time.time()
 
-    # 0) 從 settings 讀取三個播放清單 ID（必要）
+    # 0) 從 settings 讀取播放清單 ID（必要）
     pl_shorts, pl_vods, pl_recent, p1_poe327, pl_new_vods = _get_playlists_from_settings(settings)
 
     # 1) 決定 window（未提供則用預設 D-9~D-2）
     w_start, w_end = _resolve_window(window_start, window_end, tz="Asia/Taipei")
 
-    print(f"[update_playlists] 頻道={channel_id} 試跑模式={dry_run} 區間={w_start}~{w_end} 最大變更數={max_changes_per_playlist}")
+    # ==========================================
+    # [NEW] 時間判斷邏輯 (UTC+8)
+    # ==========================================
+    tz_taipei = timezone(timedelta(hours=8))
+    now = datetime.now(tz_taipei)
+    
+    # 判斷是否為每日更新時段 (00:00 <= 現在時間 < 00:30)
+    # 若 dry_run=True 且想測試邏輯，可暫時註解掉時間限制，但正式環境建議保留
+    do_daily_update = (now.hour == 0 and 0 <= now.minute < 30)
+
+    print(f"[update_playlists] 頻道={channel_id} 試跑={dry_run} 時間={now.strftime('%H:%M')} 每日更新={do_daily_update}")
     
     # 2) 查詢目標名單
+    # 初始化變數，避免未執行時報錯
+    target_shorts, target_vods, target_recent = [], [], []
     # - 來自資料庫彙總的 Top shorts / Top VOD 名單（回傳已排序的 video_id 列表）
-    target_shorts = query_top_shorts(channel_id, limit=20)
-    target_vods   = query_top_vods(channel_id, limit=10)
-    target_new_vods   = query_new_vods(channel_id, limit=10)
+    # 每日更新組：只在特定時段查詢 DB
+    if do_daily_update:
+        target_shorts = query_top_shorts(channel_id, limit=20)
+        target_vods   = query_top_vods(channel_id, limit=10)
+        target_recent = query_hot_videos(channel_id, limit=10)
+    
+    # 常態更新組：總是查詢
+    target_new_vods = query_new_vods(channel_id, limit=10)
     target_poe327   = query_poe327(channel_id)
-    # - 近期熱門使用 YouTube Analytics 的視窗排行榜（views 排序，取前 10）
-    target_recent = query_hot_videos(channel_id, limit=10)
 
     # 3) 取得現有播放清單內容（YouTube Data API）
-    current_shorts = yt_list_playlist_video_ids(pl_shorts, settings=settings)
-    current_vods   = yt_list_playlist_video_ids(pl_vods, settings=settings)
-    current_recent = yt_list_playlist_video_ids(pl_recent, settings=settings)
-    current_poe327 = yt_list_playlist_video_ids(p1_poe327, settings=settings)
-    current_new_vods   = yt_list_playlist_video_ids(pl_new_vods, settings=settings)
+    # 初始化變數
+    current_shorts, current_vods, current_recent = [], [], []
 
-    # 4) 計算差異：清單1、2 以集合差異決定需新增與刪除的 video_id
-    add_shorts, del_shorts = _diff_sets(target_shorts, current_shorts)
-    add_vods,   del_vods   = _diff_sets(target_vods, current_vods)
+    # 每日更新組：只在特定時段呼叫 API
+    if do_daily_update:
+        current_shorts = yt_list_playlist_video_ids(pl_shorts, settings=settings)
+        current_vods   = yt_list_playlist_video_ids(pl_vods, settings=settings)
+        current_recent = yt_list_playlist_video_ids(pl_recent, settings=settings)
+    
+    # 常態更新組：總是呼叫 API
+    current_poe327   = yt_list_playlist_video_ids(p1_poe327, settings=settings)
+    current_new_vods = yt_list_playlist_video_ids(pl_new_vods, settings=settings)
+
+    # 4) 計算差異
+    add_shorts, del_shorts = [], []
+    add_vods, del_vods = [], []
+    recent_needs_update = False
+
+    if do_daily_update:
+        add_shorts, del_shorts = _diff_sets(target_shorts, current_shorts)
+        add_vods,   del_vods   = _diff_sets(target_vods, current_vods)
+        # Recent 判定：內容或順序不一致才更新
+        recent_needs_update = (target_recent != current_recent)
+    
+    # 常態組差異計算
     add_poe327,   del_poe327   = _diff_sets(target_poe327, current_poe327)
-    add_new_vods,   del_new_vods   = _diff_sets(target_new_vods, current_new_vods)
+    add_new_vods, del_new_vods = _diff_sets(target_new_vods, current_new_vods)
 
-    # 5) 依限額裁切（若設定 max_changes_per_playlist）
+    # 5) 依限額裁切 (僅針對有計算差異的清單)
     if max_changes_per_playlist is not None:
-        add_shorts = list(add_shorts)[:max_changes_per_playlist]
-        del_shorts = list(del_shorts)[:max_changes_per_playlist]
-        add_vods   = list(add_vods)[:max_changes_per_playlist]
-        del_vods   = list(del_vods)[:max_changes_per_playlist]
+        if do_daily_update:
+            add_shorts = list(add_shorts)[:max_changes_per_playlist]
+            del_shorts = list(del_shorts)[:max_changes_per_playlist]
+            add_vods   = list(add_vods)[:max_changes_per_playlist]
+            del_vods   = list(del_vods)[:max_changes_per_playlist]
+        
+        # 常態組也要裁切
+        add_poe327   = list(add_poe327)[:max_changes_per_playlist]
+        del_poe327   = list(del_poe327)[:max_changes_per_playlist]
+        add_new_vods = list(add_new_vods)[:max_changes_per_playlist]
+        del_new_vods = list(del_new_vods)[:max_changes_per_playlist]
 
-    # 6) 組裝計畫輸出（dry_run 可直接回傳）
+    # 6) 組裝計畫輸出
+    # 決定 recent 的 action 標籤
+    if not do_daily_update:
+        recent_action = "skip_time_window"
+    elif recent_needs_update:
+        recent_action = "clear_and_rebuild"
+    else:
+        recent_action = "skip_identical"
+
     result = {
         "window": [w_start, w_end],
+        "daily_update_triggered": do_daily_update,
         "shorts": {
             "before": current_shorts,
             "target_top20": target_shorts,
             "add": list(add_shorts),
             "remove": list(del_shorts),
             "playlist_id": pl_shorts,
+            "status": "planned" if do_daily_update else "skipped_time_window"
         },
         "vods": {
             "before": current_vods,
@@ -90,11 +139,12 @@ def run_update_playlists(
             "add": list(add_vods),
             "remove": list(del_vods),
             "playlist_id": pl_vods,
+            "status": "planned" if do_daily_update else "skipped_time_window"
         },
         "recent": {
             "before": current_recent,
             "target_top10": target_recent,
-            "action": "clear_and_rebuild",
+            "action": recent_action,
             "playlist_id": pl_recent,
         },
         "metrics": {
@@ -103,35 +153,51 @@ def run_update_playlists(
         },
     }
 
-    print(f"[計畫] shorts 新增={len(add_shorts)} 移除={len(del_shorts)};")
-    print(f"[計畫] vods 新增={len(add_vods)} 移除={len(del_vods)};") 
-    print(f"[計畫] recent 重建={len(target_recent)};") 
+    # Log 輸出
+    if do_daily_update:
+        print(f"[計畫] shorts 新增={len(add_shorts)} 移除={len(del_shorts)}")
+        print(f"[計畫] vods 新增={len(add_vods)} 移除={len(del_vods)}") 
+        if recent_needs_update:
+            print(f"[計畫] recent 重建={len(target_recent)} (內容或順序變動)") 
+        else:
+            print(f"[計畫] recent 略過 (內容與順序一致)")
+    else:
+        print(f"[計畫] Daily清單 (shorts/vods/recent) 跳過更新 (非 00:00-00:30 時段)")
+
     print(f"[計畫] poe327 新增={len(add_poe327)} 移除={len(del_poe327)}")
     print(f"[計畫] new_vods 新增={len(add_new_vods)} 移除={len(del_new_vods)}")
 
     if dry_run:
-        # 僅輸出計畫，不觸發 API 實作
         result["metrics"]["duration_sec"] = round(time.time() - started_at, 3)
         return result
 
     # 7) 執行更新
-    # 清單1/2：先刪除再新增，降低插入失敗導致重複的機率
-    _yt_delete_many(pl_shorts, del_shorts, settings, label="shorts")
-    _yt_insert_many(pl_shorts, add_shorts, settings, label="shorts")
+    
+    # --- 每日更新組 ---
+    if do_daily_update:
+        # Shorts
+        _yt_delete_many(pl_shorts, del_shorts, settings, label="shorts")
+        _yt_insert_many(pl_shorts, add_shorts, settings, label="shorts")
 
-    _yt_delete_many(pl_vods, del_vods, settings, label="vods")
-    _yt_insert_many(pl_vods, add_vods, settings, label="vods")
+        # Vods
+        _yt_delete_many(pl_vods, del_vods, settings, label="vods")
+        _yt_insert_many(pl_vods, add_vods, settings, label="vods")
 
-    # 清單3（近期熱門）：清空後依 target_recent 的排序重建
-    _yt_delete_many(pl_recent, current_recent, settings, label="recent-clear")
-    _yt_insert_in_order(pl_recent, target_recent, settings, label="recent-rebuild")
+        # Recent
+        if recent_needs_update:
+            _yt_delete_many(pl_recent, current_recent, settings, label="recent-clear")
+            _yt_insert_in_order(pl_recent, target_recent, settings, label="recent-rebuild")
+        else:
+            print(f"[執行] recent 內容一致，跳過更新。")
 
+    # --- 常態更新組 (不受時間限制) ---
     _yt_delete_many(p1_poe327, del_poe327, settings, label="poe327")
     _yt_insert_many(p1_poe327, add_poe327, settings, label="poe327")
 
     _yt_delete_many(pl_new_vods, del_new_vods, settings, label="new_vods")
     _yt_insert_many(pl_new_vods, add_new_vods, settings, label="new_vods")
-    # 8) 回填耗時並回傳
+
+    # 8) 回填耗時
     result["metrics"]["duration_sec"] = round(time.time() - started_at, 3)
     print(f"[成功] update_playlists 執行完成，耗時 {result['metrics']['duration_sec']} 秒")
     return result

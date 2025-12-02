@@ -231,8 +231,10 @@ def format_discord_message(category, period_desc, top_videos):
     if not top_videos:
         return f"**📊 YouTube 流量飆升榜 - {period_desc}**\n目前沒有數據變化。"
         
+    # 定義 UTC+8 時區
+    tz_taipei = timezone(timedelta(hours=8))
     msg = f"**📊 YouTube 流量飆升榜 - {period_desc}**\n"
-    msg += f"更新時間: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+    msg += f"更新時間: {datetime.now(tz_taipei).strftime('%Y-%m-%d %H:%M')}\n\n"
     
     rank_emojis = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
     

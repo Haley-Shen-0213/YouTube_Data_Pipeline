@@ -21,9 +21,48 @@ from scripts.channel.ensure import ensure_dim_channel_exists
 from scripts.services.video_ingestion import run_fetch_videos
 # 新增：排行榜看板服務
 from scripts.services.ranking_dashboard import run_ranking_update
+# 播放清單維護服務
+from scripts.services.playlist_update import run_update_playlists
+# 影片抓取與熱門影片分析服務
+from scripts.services.video_ingestion import run_fetch_videos
 
 # 建立 Typer 應用程式，並提供全域 help 描述
 app = typer.Typer(help="YouTube Data Pipeline track_velocity", invoke_without_command=True)
+
+# 子命令：update_playlists
+# 功能：一次更新三個播放清單（最熱門 Shorts、最熱門影片、近期熱門）
+@app.command("update_playlists")
+def cmd_update_playlists(
+    channel_id: Optional[str] = typer.Option(None, "--channel-id", "-c", help="YouTube channel id；預設讀取 .env CHANNEL_ID"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="僅輸出差異，不呼叫 YouTube API 實際更新"),
+    window_start: Optional[str] = typer.Option(None, "--window-start", help="YYYY-MM-DD；近期熱門清單起日，預設 D-9"),
+    window_end: Optional[str] = typer.Option(None, "--window-end", help="YYYY-MM-DD；近期熱門清單迄日，預設 D-2"),
+    max_changes_per_playlist: Optional[int] = typer.Option(None, "--max-changes", help="每個清單最多允許的變更數，保護日額"),
+):
+    """
+    一次更新三個播放清單：
+      1) 最熱門 Shorts（shorts 前 20）
+      2) 最熱門影片（VOD 前 10）
+      3) 近期熱門（D-9 ~ D-2 期間 views 前 10，清空後依序重建）
+
+    策略：
+      - 清單1/2 僅做差異 insert/delete，避免調整順序以節省日額
+      - 清單3 清空並依排序重建（需要順序）
+    """
+    # 讀取 .env 與其他設定
+    cfg = load_settings()
+    # 若使用者未提供 --channel-id，則以設定檔預設值解析
+    cid = _resolve_channel_id(channel_id, cfg)
+
+    # 實際執行播放清單更新
+    run_update_playlists(
+        channel_id=cid,
+        dry_run=dry_run,
+        window_start=window_start,
+        window_end=window_end,
+        max_changes_per_playlist=max_changes_per_playlist,
+        settings=cfg,
+    )
 
 # 子命令：update_rankings
 # 功能：更新 Discord 看板
@@ -86,6 +125,12 @@ def cmd_run_all(
     fv_max_results: int = typer.Option(50, "--fv-max-results", min=1, max=50, help="fetch_videos: videos.list 每批上限"),
     fv_published_after: Optional[str] = typer.Option(None, "--fv-published-after", help="fetch_videos: YYYY-MM-DD"),
     fv_published_before: Optional[str] = typer.Option(None, "--fv-published-before", help="fetch_videos: YYYY-MM-DD"),
+
+    # update_playlists 相關參數
+    up_dry_run: bool = typer.Option(False, "--up-dry-run", help="update_playlists: 僅輸出差異，不實際呼叫 API"),
+    up_window_start: Optional[str] = typer.Option(None, "--up-window-start", help="update_playlists: YYYY-MM-DD"),
+    up_window_end: Optional[str] = typer.Option(None, "--up-window-end", help="update_playlists: YYYY-MM-DD"),
+    up_max_changes: Optional[int] = typer.Option(None, "--up-max-changes", help="update_playlists: 每個清單最多允許的變更數"),
 
     # 重試設定（run_all 全域）
     max_retries: int = typer.Option(3, "--max-retries", help="每個步驟最多重試次數（不含首次執行）"),
@@ -163,6 +208,19 @@ def cmd_run_all(
             "kwargs": {
             },
         },
+        {
+            "name": "update_playlists",
+            "fn": run_update_playlists,
+            "args": [],
+            "kwargs": {
+                "channel_id": cid,
+                "dry_run": up_dry_run,
+                "window_start": up_window_start,
+                "window_end": up_window_end,
+                "max_changes_per_playlist": up_max_changes,
+                "settings": cfg,
+            },
+        },
     ]
 
     # 統一交給 runner 執行（內含：序列執行、錯誤攔截、是否重試、通知彙整）
@@ -192,6 +250,12 @@ def main():
         fv_published_after=None,
         fv_published_before=None,
 
+        # update_playlists 相關參數
+        up_dry_run=False,
+        up_window_start=None,
+        up_window_end=None,
+        up_max_changes=None,
+
         # 重試設定（run_all 全域）
         max_retries=3,
         backoff_base=2.0,
@@ -204,23 +268,91 @@ if __name__ == "__main__":
     # 清空終端畫面，讓輸出更乾淨
     clear_terminal()    
 
-    # 行為說明：
-    # - 若「沒有帶任何子命令或參數」，則視為想要一鍵執行完整管線 → 呼叫 main()（即 run_all）
-    # - 否則，交由 Typer 分派對應的子命令（run_all / fetch_videos / top_videos / update_playlists / ingest_channel_daily）
+    # 定義重試執行器 
+    def execute_with_network_retry(func, func_name="Operation", max_retries=3):
+        for attempt in range(max_retries):
+            try:
+                return func()
+            except (typer.Exit, SystemExit):
+                raise
+            except RuntimeError as e:
+                # 針對 run_probe 拋出的特定錯誤進行檢查
+                msg = str(e)
+                # 檢查是否為認證錯誤 (包含 run_probe 拋出的錯誤)
+                if "interactive=False" in msg or "探針檢測失敗" in msg:
+                    # 如果是探針說 OAuth 壞了，或者連線失敗，這裡可以決定是否要重試
+                    # 如果是 "OAuth Token 已失效" -> 不重試，直接死
+                    # 如果是 "探針檢測失敗: db: MySQL 連線失敗" -> 這是網路問題，可以重試！
+                    
+                    if "OAuth Token 已失效" in msg:
+                        print(f"⛔ [{func_name}] 認證失效，停止重試。請手動執行 run_probe 登入。")
+                        raise e
+                    
+                    # 其他 Runtime 錯誤 (如 DB 連線失敗) 視為可重試
+                    pass 
+                else:
+                    # 其他未預期的 Runtime Error
+                    raise e
+                # [修正點 1] 捕捉錯誤變數以便在下方使用
+                last_exception = e
+            except Exception as e:
+                # [修正點 1] 捕捉錯誤變數以便在下方使用
+                last_exception = e
+                pass # 進入下方的重試邏輯
+
+            # === 統一的重試處理 ===
+            # 取得錯誤訊息 (e 在這裡可能未定義，需小心 scope，建議改寫如下)
+            # 為了簡潔，這裡假設進入此區塊就是需要重試
+            
+            if attempt == max_retries - 1:
+                print(f"❌ [{func_name}] 嘗試 {max_retries} 次後仍失敗。錯誤原因: {last_exception}")
+                sys.exit(1) # 或者 raise
+
+            wait_sec = (2 ** attempt) * 5
+
+            print(f"⚠️ [{func_name}] 執行失敗 (嘗試 {attempt + 1}/{max_retries}): {last_exception}")
+            print(f"⏳ 將於 {wait_sec} 秒後重試...")
+            
+            time.sleep(wait_sec)
+
+    # ---------------------------------------------------------
+    # 執行邏輯
+    # ---------------------------------------------------------
     if len(sys.argv) <= 1:
-        # 例如：python -m scripts.cli
+        # 自動化模式 (Run All)
         try:
             from scripts.run_probe import run_probe
-            run_probe()
+            
+            # 1. 執行探針 (禁止互動！)
+            # 使用 lambda 將參數包進去傳給重試器
+            print(">> 啟動前置檢查 (Probe)...")
+            execute_with_network_retry(
+                lambda: run_probe(interactive_mode=False), 
+                func_name="Startup Probe"
+            )
+            
+            # 2. 執行主流程
+            print(">> 前置檢查通過，開始執行主流程...")
             code = main()
-            # 註：cmd_run_all 內部最後會 raise typer.Exit，通常不會回傳到這行
+            
         except typer.Exit as e:
-            # 將 Typer 的 Exit 統一轉成系統退出碼
             raise SystemExit(e.exit_code)
+        except Exception as e:
+            print(f"❌ 自動化流程中止: {e}")
+            sys.exit(1)
     else:
         # 例如：
         # - python -m scripts.cli run_all --tv-top 20
         # - python -m scripts.cli fetch_videos --max-results 10
         # - python -m scripts.cli update_playlists --dry-run
         # - python -m scripts.cli ingest_channel_daily
-        app()
+        # 手動指令模式
+        try:
+            # 這裡通常不需要跑 run_probe，直接跑指令即可
+            # 如果指令內部連線失敗，會由指令內部的重試機制處理
+            execute_with_network_retry(app, func_name="Command Execution")
+        except SystemExit:
+            raise
+        except Exception as e:
+            print(f"❌ 指令執行失敗: {e}")
+            sys.exit(1)
